@@ -361,6 +361,14 @@ nav.bottomnav button.active{color:var(--teal);}
 .stepper{display:flex;align-items:center;gap:8px;background:var(--card);border-radius:20px;border:1.5px solid var(--line);padding:4px 6px;}
 .stepper button{width:26px;height:26px;border-radius:50%;border:none;background:var(--teal-tint);color:var(--teal-dark);font-weight:800;font-size:15px;}
 .stepper span{min-width:18px;text-align:center;font-weight:700;font-size:13.5px;}
+.stepper input.qty-input{width:52px;min-width:0;text-align:center;font-weight:700;font-size:14px;border:none;background:transparent;padding:2px 0;margin:0;color:inherit;font-family:inherit;-moz-appearance:textfield;appearance:textfield;}
+.stepper input.qty-input::-webkit-outer-spin-button,.stepper input.qty-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
+.stepper input.qty-input:focus{outline:2px solid var(--teal);outline-offset:1px;border-radius:8px;background:#fff;}
+.pqty{display:flex;align-items:center;gap:6px;margin-top:8px;}
+.pqty label{font-size:11px;font-weight:700;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.04em;}
+.pqty input.pq{flex:1;min-width:0;width:100%;text-align:center;font-weight:700;font-size:14px;border:1.5px solid var(--line);border-radius:10px;padding:6px 4px;background:var(--card);color:inherit;font-family:inherit;-moz-appearance:textfield;appearance:textfield;}
+.pqty input.pq::-webkit-outer-spin-button,.pqty input.pq::-webkit-inner-spin-button{-webkit-appearance:none;margin:0;}
+.pqty input.pq:focus{outline:2px solid var(--teal);outline-offset:1px;border-color:var(--teal);}
 .cartline .ctotal{font-weight:700;font-size:13.5px;width:64px;text-align:right;}
 .cartline .rm{background:none;border:none;color:var(--coral);font-size:16px;padding:0 2px;}
 
@@ -1083,6 +1091,7 @@ function renderPOS(){
         <div class="pname">${escapeHtml(p.name)}</div>
         <div class="pprice">${fmt(p.priceVente)} <small style="font-size:11px;">${state.config.currency}</small></div>
         <div class="pstock ${low?'low':''}">${p.stock} ${escapeHtml(p.unit||'unité')} en stock</div>
+        <div class="pqty"><label>Qté</label><input type="number" class="pq" value="1" min="1" step="1" inputmode="numeric" aria-label="Quantité" ${rupture?'disabled':''}></div>
         <div class="pos-actions">
           <button class="quickbtn" data-quick="${p.id}" ${rupture?'disabled style="opacity:.4"':''}>${rupture?'Rupture':'⚡ Vente rapide'}</button>
           <button class="cartbtn" data-add="${p.id}" ${rupture?'disabled style="opacity:.4"':''} title="Ajouter au panier">🛒</button>
@@ -1101,52 +1110,67 @@ function renderPOS(){
     posFilterCat = b.dataset.cat; renderPOS();
   }));
   document.querySelectorAll('#view-pos [data-add]').forEach(b=>b.addEventListener('click', ()=>{
-    addToCart(b.dataset.add);
+    const inp = b.closest('.pcard').querySelector('.pq');
+    if(addToCart(b.dataset.add, inp ? inp.value : 1) && inp) inp.value = 1;
   }));
+  document.querySelectorAll('#view-pos .pq').forEach(inp=>{
+    inp.addEventListener('focus', ()=>inp.select());
+    inp.addEventListener('keydown', e=>{ if(e.key==='Enter') inp.blur(); });
+  });
   document.querySelectorAll('#view-pos [data-quick]').forEach(b=>b.addEventListener('click', ()=>{
-    quickSale(b.dataset.quick);
+    const inp = b.closest('.pcard').querySelector('.pq');
+    quickSale(b.dataset.quick, inp ? inp.value : 1);
   }));
   renderFloatCart();
 }
 
-function addToCart(productId){
+function addToCart(productId, n){
   const p = state.products.find(x=>x.id===productId);
-  if(!p) return;
+  if(!p) return false;
+  n = Math.floor(Number(n)); if(!isFinite(n) || n<1) n = 1;
   const inCartQty = cart.filter(c=>c.productId===productId).reduce((a,c)=>a+c.qty,0);
-  if(inCartQty >= p.stock){ toast('Stock insuffisant pour '+p.name); return; }
+  if(inCartQty + n > p.stock){
+    const dispo = Math.max(0, p.stock - inCartQty);
+    toast(dispo>0 ? 'Stock insuffisant : '+dispo+' disponible(s) pour '+p.name : 'Stock insuffisant pour '+p.name);
+    return false;
+  }
   const existing = cart.find(c=>c.productId===productId);
-  if(existing) existing.qty += 1;
-  else cart.push({productId:p.id, name:p.name, categoryId:p.categoryId, priceUnit:p.priceVente, qty:1});
-  toast(p.name+' ajouté');
+  if(existing) existing.qty += n;
+  else cart.push({productId:p.id, name:p.name, categoryId:p.categoryId, priceUnit:p.priceVente, qty:n});
+  toast(n+' × '+p.name+' ajouté'+(n>1?'s':''));
   renderFloatCart();
+  return true;
 }
 
 // Vente en 1 tap : enregistre immédiatement 1 unité payée en espèces, sans passer par le panier.
 // Un bouton "Annuler" reste disponible quelques secondes en cas d'erreur.
-async function quickSale(productId){
+async function quickSale(productId, n){
   const p = state.products.find(x=>x.id===productId);
   if(!p || p.stock<=0){ toast('Rupture de stock'); return; }
-  const cons = consumeStock(p.id, 1);
-  p.stock -= 1;
+  n = Math.floor(Number(n)); if(!isFinite(n) || n<1) n = 1;
+  if(n > p.stock){ toast('Stock insuffisant : '+p.stock+' disponible(s) pour '+p.name); return; }
+  const cons = consumeStock(p.id, n);
+  p.stock -= n;
   const priceUnit = p.priceVente;
+  const totalLigne = priceUnit * n;
   const item = {
-    productId:p.id, name:p.name, categoryId:p.categoryId, qty:1, priceUnit, total:priceUnit,
+    productId:p.id, name:p.name, categoryId:p.categoryId, qty:n, priceUnit, total:totalLigne,
     coutUnitaireMoyen: cons.coutUnitaireMoyen, lotConsumptions: cons.lotConsumptions
   };
   const sale = {
-    id:uid(), dateISO:new Date().toISOString(), items:[item], total:priceUnit,
-    paymentMode:'Espèces', montantRecu:priceUnit, monnaie:0, creditClientId:null, montantCredit:0,
+    id:uid(), dateISO:new Date().toISOString(), items:[item], total:totalLigne,
+    paymentMode:'Espèces', montantRecu:totalLigne, monnaie:0, creditClientId:null, montantCredit:0,
     recordedBy: currentUser() ? currentUser().nom : ''
   };
   state.sales.push(sale);
-  logActivity('Vente rapide', `${p.name} · ${fmt(priceUnit)} ${state.config.currency}`);
+  logActivity('Vente rapide', `${p.name} x${n} · ${fmt(totalLigne)} ${state.config.currency}`);
   await saveState();
   renderPOS();
-  showUndoToast(`Vente enregistrée : ${p.name} — ${fmt(priceUnit)} ${state.config.currency}`, async ()=>{
+  showUndoToast(`Vente enregistrée : ${n} × ${p.name} — ${fmt(totalLigne)} ${state.config.currency}`, async ()=>{
     item.lotConsumptions.forEach(lc=>{
       if(lc.lotId){ const lot = state.lots.find(l=>l.id===lc.lotId); if(lot) lot.qtyRemaining += lc.qty; }
     });
-    p.stock += 1;
+    p.stock += n;
     state.sales = state.sales.filter(s=>s.id!==sale.id);
     logActivity('Vente rapide annulée', p.name);
     await saveState();
@@ -1184,7 +1208,7 @@ function openCartModal(){
         <div class="cprice">${fmt(c.priceUnit)} ${state.config.currency} / unité</div>
       </div>
       <div class="stepper">
-        <button data-dec="${i}">−</button><span>${c.qty}</span><button data-inc="${i}">+</button>
+        <button data-dec="${i}">−</button><input type="number" class="qty-input" data-qty="${i}" value="${c.qty}" min="1" step="1" inputmode="numeric" aria-label="Quantité"><button data-inc="${i}">+</button>
       </div>
       <div class="ctotal">${fmt(c.qty*c.priceUnit)}</div>
       <button class="rm" data-rm="${i}">✕</button>
@@ -1260,6 +1284,23 @@ function openCartModal(){
       cart[i].qty--; if(cart[i].qty<=0) cart.splice(i,1);
       openCartModal();
     }));
+    document.querySelectorAll('[data-qty]').forEach(inp=>{
+      inp.addEventListener('focus', ()=>inp.select());
+      inp.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); inp.blur(); } });
+      inp.addEventListener('change', ()=>{
+        const i = Number(inp.dataset.qty);
+        const line = cart[i]; if(!line) return;
+        let v = Math.floor(Number(inp.value));
+        if(!isFinite(v) || v<1) v = 1;
+        const p = state.products.find(x=>x.id===line.productId);
+        const autres = cart.filter((c,k)=>k!==i && c.productId===line.productId).reduce((a,c)=>a+c.qty,0);
+        if(p && v+autres>p.stock){
+          v = Math.max(1, p.stock-autres);
+          toast('Stock maximum atteint ('+p.stock+')');
+        }
+        line.qty = v; openCartModal();
+      });
+    });
     document.querySelectorAll('[data-rm]').forEach(b=>b.addEventListener('click', ()=>{
       cart.splice(Number(b.dataset.rm),1); openCartModal();
     }));
